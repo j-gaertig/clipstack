@@ -1,0 +1,38 @@
+[package]
+name = "cosmic-clipboard"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Super+V clipboard history for the COSMIC desktop, with iPad drawing"
+repository = "https://github.com/j-gaertig/clipstack"
+readme = "README.md"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+url = "2"
+percent-encoding = "2"
+tiny_http = "0.12"
+jiff = "0.2"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+rev = "95236a944bfd51c63a2fc65fe50a592c47168d40"
+default-features = false
+features = ["wayland", "winit", "tokio", "single-instance", "dbus-config", "multi-window", "qr_code"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false

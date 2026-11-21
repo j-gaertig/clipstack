@@ -1,0 +1,178 @@
+:root { --bar: 60px; --accent: #7dd3e0; --bg: #0b0b0c; --panel: #111113; --line: #26262a; --hover: #1d1d21; --sel: #26262b; --text: #ececee; --muted: #8a8a93; }
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font: 14px/1.4 -apple-system, system-ui, 'Inter', sans-serif;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+/* Toolbar on top, the drawing area takes exactly the rest of the screen */
+/* No translucent status bar: iPadOS gives Home Screen apps that use it a
+   viewport shorter than the screen and leaves a black strip at the bottom
+   that no CSS can reach (WebKit bugs 313800, 317153). */
+body { position: fixed; inset: 0; display: flex; flex-direction: column; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; }
+
+/* Toolbar */
+#toolbar {
+  position: relative; flex: none; z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+  padding: calc(8px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 8px calc(12px + env(safe-area-inset-left));
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.group { display: flex; align-items: center; gap: 2px; }
+.spacer { flex: 1; }
+#toolbar > .group:last-child { margin-left: auto; }
+.tool {
+  width: 44px; height: 44px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center; color: var(--muted);
+  transition: background .12s;
+}
+.tool svg { width: 22px; height: 22px; }
+.tool:active { background: var(--hover); color: var(--text); }
+.tool:disabled { opacity: .28; }
+.tool.on { background: var(--sel); color: var(--text); }
+.seg { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.seg .tool { width: 42px; height: 40px; }
+.seg .tool.active { background: var(--sel); color: var(--text); box-shadow: inset 0 0 0 1px #3f3f46; }
+.swatch { width: 38px; height: 46px; display: inline-flex; align-items: center; justify-content: center; position: relative; }
+.swatch span { width: 26px; height: 26px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); transition: transform .12s; }
+.swatch.active span { transform: scale(1.08); box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--text); }
+.swatch input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; }
+.swatch.custom span { background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); }
+.sizes .size { width: 40px; height: 44px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; }
+.sizes .size i { display: block; border-radius: 50%; background: var(--muted); }
+.sizes .size.active { background: var(--sel); }
+.sizes .size.active i { background: var(--text); }
+
+.send {
+  height: 40px; padding: 0 14px 0 11px; border-radius: 6px; display: inline-flex; align-items: center; gap: 7px;
+  background: var(--text); color: #0b0b0c; font-weight: 600;
+}
+.send svg { width: 18px; height: 18px; }
+.send .label { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.1; }
+.send .conn { font-size: 10.5px; font-weight: 500; opacity: .6; }
+.send:disabled { opacity: .4; }
+.pill { height: 38px; padding: 0 14px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line); }
+.pill.primary { background: var(--text); color: #0b0b0c; border-color: var(--text); font-weight: 600; }
+body.no-sheet #toolbar .group:not(:last-child) { opacity: .3; pointer-events: none; }
+
+/* Narrower iPads (portrait): everything still fits in one row */
+@media (max-width: 900px) {
+  #toolbar { gap: 6px 8px; padding-left: calc(8px + env(safe-area-inset-left)); padding-right: calc(8px + env(safe-area-inset-right)); }
+  .seg .tool { width: 38px; }
+  .swatch { width: 31px; }
+  .swatch span { width: 24px; height: 24px; }
+  .sizes .size { width: 31px; }
+  .tool { width: 40px; }
+  .send { padding: 0 12px 0 10px; }
+  .send .conn { display: none; }
+}
+@media (max-width: 780px) {
+  .send { padding: 0 11px; }
+  .send .label { display: none; }
+}
+/* Menu: dropdown rows (icon, label, control on the right) */
+#menu {
+  position: fixed; z-index: 20; right: calc(12px + env(safe-area-inset-right)); top: calc(var(--bar) + 6px);
+  width: 250px; padding: 4px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 16px 48px rgba(0,0,0,.55), 0 2px 6px rgba(0,0,0,.3);
+  display: flex; flex-direction: column;
+  transform-origin: top right; animation: menu-in .12s ease-out;
+}
+@keyframes menu-in { from { opacity: 0; transform: scale(.96) translateY(-4px); } }
+#menu[hidden] { display: none; }
+#menu button {
+  display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px;
+  text-align: left; border-radius: 6px; font-size: 14px; color: var(--text);
+}
+#menu button span { flex: 1; }
+#menu button i { display: inline-flex; width: 18px; height: 18px; color: var(--muted); }
+#menu button i svg { width: 18px; height: 18px; }
+#menu button:active { background: var(--hover); }
+#menu .sep { height: 1px; margin: 4px 6px; background: var(--line); }
+#menu .danger, #menu .danger i { color: #ff6b6b; }
+#menu .danger:active { background: rgba(239, 68, 68, .12); }
+#menu .switch {
+  position: relative; width: 34px; height: 20px; border-radius: 10px; background: #2c2c31; transition: background .15s;
+}
+#menu .switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #f5f5f5; transition: transform .15s;
+}
+#menu .on .switch { background: #4d6bfa; }
+#menu .on .switch::after { transform: translateX(14px); }
+
+/* Sheet */
+#stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #1a1a1d; }
+body:not(.no-sheet) #stage { background: #fff; }
+#sheet { position: absolute; inset: 0; touch-action: none; }
+#sheet canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#sheet .sheet-bg, #sheet .sheet-ink, #sheet .sheet-livewrap, #sheet .sheet-livewrap canvas { pointer-events: none; }
+#sheet .sheet-livewrap { position: absolute; inset: 0; }
+/* Inverts whatever is below it, so the eraser ring shows on any background */
+#sheet .eraser-ring {
+  position: absolute; left: 0; top: 0; border: 1.5px solid rgba(255, 255, 255, .55); border-radius: 50%;
+  box-shadow: 0 0 0 .5px rgba(255, 255, 255, .25), inset 0 0 0 .5px rgba(255, 255, 255, .25);
+  mix-blend-mode: difference; pointer-events: none; display: none; will-change: transform;
+}
+/* Lasso selection */
+#sheet [hidden] { display: none !important; }
+#sheet .sel-box {
+  position: absolute; left: 0; top: 0; border: 1.5px dashed #4d6bfa; border-radius: 8px;
+  background: rgba(77, 107, 250, .06); pointer-events: none; will-change: transform;
+}
+#sheet .sel-bar {
+  position: absolute; left: 0; top: 0; z-index: 2; display: flex; padding: 3px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--line); box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.2);
+  animation: fade-in .12s ease-out;
+}
+@keyframes fade-in { from { opacity: 0; } }
+#sheet .sel-bar button { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px 0 11px; border-radius: 7px; color: #ff6b6b; font-size: 14px; }
+#sheet .sel-bar svg { width: 17px; height: 17px; }
+#sheet .sel-bar button:active { background: rgba(239, 68, 68, .14); }
+#toolbar .group.off { opacity: .3; pointer-events: none; transition: opacity .12s; }
+/* The (empty) drawing surface must not swallow taps on the waiting screen */
+body.no-sheet #sheet { pointer-events: none; }
+#empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; text-align: center; color: var(--muted); padding: 24px;
+}
+#empty .big { font-size: 19px; font-weight: 600; color: var(--text); }
+#empty button { margin-top: 10px; }
+#empty[hidden] { display: none; }
+
+/* Overlays */
+#toast {
+  position: fixed; z-index: 30; left: 50%; top: calc(var(--bar) + 16px); transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px;
+  pointer-events: none;
+}
+#toast[hidden] { display: none; }
+#banner {
+  position: fixed; z-index: 10; left: 50%; transform: translateX(-50%); top: calc(var(--bar) + 12px);
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 6px 6px 14px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.45);
+}
+#banner[hidden] { display: none; }
+#pair {
+  position: fixed; inset: 0; z-index: 40; background: var(--bg);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 24px; text-align: center; color: var(--muted);
+}
+#pair[hidden] { display: none; }
+#pair .big { font-size: 20px; font-weight: 600; color: var(--text); }
+#pair input {
+  font: 600 34px/1 ui-monospace, monospace; letter-spacing: 10px; text-align: center;
+  width: 260px; padding: 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); -webkit-user-select: text; user-select: text;
+}
+#pairError { color: #ff6b6b; min-height: 1.4em; }
+/* Anything iPadOS still leaves outside the page looks like the whiteboard */
+html:has(body:not(.no-sheet)) { background: #fff; }

@@ -1,0 +1,12 @@
+# Cargo
+/target/
+
+# AppImage build (tools, AppDir) and output
+/build/
+*.AppImage
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

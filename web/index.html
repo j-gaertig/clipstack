@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Clipstack">
+  <meta name="theme-color" content="#111113">
+  <title>Clipstack</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="stylesheet" href="app.css?v=19">
+</head>
+<body class="no-sheet">
+  <header id="toolbar">
+    <div class="group seg" id="tools">
+      <button data-tool="pen" class="tool" title="Pen"></button>
+      <button data-tool="highlighter" class="tool" title="Highlighter"></button>
+      <button data-tool="eraser" class="tool" title="Eraser"></button>
+      <button data-tool="lasso" class="tool" title="Lasso: circle ink to move or delete it"></button>
+    </div>
+    <div class="group" id="colors"></div>
+    <div class="group sizes" id="sizes"></div>
+    <div class="group">
+      <button id="undo" class="tool" title="Undo (two-finger tap)"></button>
+      <button id="redo" class="tool" title="Redo (three-finger tap)"></button>
+    </div>
+    <div class="spacer"></div>
+    <div class="group">
+      <button id="more" class="tool" title="More"></button>
+      <button id="submit" class="send" title="Send to PC" disabled></button>
+    </div>
+  </header>
+  <div id="menu" role="menu" hidden>
+    <button id="blank" role="menuitem"><i data-icon="filePlus"></i><span>New blank page</span></button>
+    <button id="fit" role="menuitem"><i data-icon="fit"></i><span>Fit to screen</span></button>
+    <div class="sep"></div>
+    <button id="finger" role="menuitemcheckbox"><i data-icon="hand"></i><span>Draw with finger</span><b class="switch"></b></button>
+    <div class="sep"></div>
+    <button id="clear" role="menuitem" class="danger"><i data-icon="trash"></i><span>Clear drawing</span></button>
+  </div>
+  <div id="toast" hidden></div>
+  <div id="banner" hidden>
+    <span>New image from the PC</span>
+    <button id="bannerLoad" class="pill primary">Open</button>
+    <button id="bannerLater" class="pill">Later</button>
+  </div>
+  <main id="stage">
+    <div id="empty">
+      <div class="big">Waiting for an image from the PC</div>
+      <div>On the PC press Super+V and click the pen on an image,<br>or start with a blank page.</div>
+      <button id="emptyBlank" class="pill primary">Blank page</button>
+    </div>
+    <div id="sheet"></div>
+  </main>
+  <form id="pair" hidden>
+    <div class="big">Pair this iPad with your PC</div>
+    <div>On the PC: Super+V → tablet icon. Enter the 6-digit code shown there. You only need to do this once.</div>
+    <input id="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000">
+    <button type="submit" class="pill primary">Pair</button>
+    <div id="pairError"></div>
+  </form>
+  <script type="module" src="app.js?v=19"></script>
+</body>
+</html>

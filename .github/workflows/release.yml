@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. 0.1.0 (without "v")
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Validate version
+        run: |
+          v='${{ inputs.version }}'
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::'$v' is not a version like 1.2.3"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then echo "::error::Tag v$v already exists"; exit 1; fi
+
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ inputs.version }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: Clipstack-x86_64.AppImage
+
+      - name: Write release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/release-notes.sh "v${{ inputs.version }}" > notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" Clipstack-x86_64.AppImage \
+            --target "$GITHUB_SHA" --title "v${{ inputs.version }}" --notes-file notes.md

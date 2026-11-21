@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.jgaertig.CosmicClipboard</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Clipstack</name>
+  <summary>Super+V clipboard history for COSMIC</summary>
+  <description>
+    <p>
+      Remembers copied text, images and files and shows them at the mouse
+      pointer with Super+V, like on Windows. Click or press Enter to paste an
+      entry; entries can be pinned, searched and deleted. Images can be sent
+      to an iPad to draw on them with the Apple Pencil.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.github.jgaertig.CosmicClipboard.desktop</launchable>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.0.1" date="2026-11-21"/>
+  </releases>
+</component>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<defs><clipPath id="t"><rect x="32" y="32" width="960" height="960" rx="215"/></clipPath>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0d1028"/><stop offset=".6" stop-color="#1a1b4b"/><stop offset="1" stop-color="#3b1f66"/></linearGradient>
+<linearGradient id="w" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".75" stop-color="#f4f3fb"/><stop offset="1" stop-color="#dcdaf0"/></linearGradient>
+<filter id="sh" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#07051f" flood-opacity="0.45"/></filter></defs>
+<g clip-path="url(#t)"><rect width="1024" height="1024" fill="url(#sky)"/><g fill="#fff"><circle cx="190" cy="170" r="6" opacity=".85"/><circle cx="430" cy="110" r="4" opacity=".6"/><circle cx="820" cy="190" r="5" opacity=".75"/><circle cx="890" cy="430" r="4" opacity=".5"/><circle cx="120" cy="470" r="3.5" opacity=".5"/>
+<path d="M250 285h30M265 270v30M760 330h22M771 319v22" stroke="#fff" stroke-width="5" stroke-linecap="round" opacity=".7"/></g>
+<path d="M-50 380C150 250 330 420 520 300S860 160 1080 260v120C860 290 700 430 520 420S150 380-50 500z" fill="#4be0b0" opacity=".22"/>
+<path d="M-20 820l180-160 140 110 190-210 210 190 130-90 220 180v200H-20z" fill="#5a3fa8"/>
+<path d="M-20 900l220-120 170 90 200-130 230 140 240-90v260H-20z" fill="#7a55d0"/></g>
+<g filter="url(#sh)"><rect x="360" y="250" width="400" height="520" rx="70" fill="url(#w)" opacity=".4" transform="rotate(10 560 510)"/>
+<rect x="300" y="262" width="420" height="550" rx="74" fill="url(#w)"/>
+<rect x="404" y="206" width="212" height="112" rx="44" fill="url(#w)"/>
+<rect x="460" y="236" width="100" height="28" rx="14" fill="#2a1d5c"/>
+<rect x="372" y="420" width="276" height="42" rx="21" fill="#2a1d5c"/>
+<rect x="372" y="516" width="200" height="42" rx="21" fill="#2a1d5c" opacity=".35"/>
+<rect x="372" y="612" width="236" height="42" rx="21" fill="#2a1d5c" opacity=".35"/></g></svg>

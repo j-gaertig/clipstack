@@ -1,0 +1,50 @@
+name: Build AppImage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to build (without "v"); defaults to the one in Cargo.toml
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set version
+        if: inputs.version != ''
+        run: |
+          sed -i '0,/^version = ".*"/s//version = "${{ inputs.version }}"/' Cargo.toml
+          sed -i 's|<release version="[^"]*" date="[^"]*"/>|<release version="${{ inputs.version }}" date="'"$(date -u +%F)"'"/>|' packaging/*.metainfo.xml
+          sed -i '/^name = "cosmic-clipboard"$/{n;s/^version = ".*"/version = "${{ inputs.version }}"/}' Cargo.lock
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build AppImage
+        run: ./packaging/build-appimage.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Clipstack-x86_64.AppImage
+          path: Clipstack-x86_64.AppImage
+          if-no-files-found: error

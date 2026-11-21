@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Clipstack
+GenericName=Clipboard History
+Comment=Open the clipboard history with Super+V
+Exec=cosmic-clipboard
+Icon=com.github.jgaertig.CosmicClipboard
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;history;paste;
+StartupNotify=false
