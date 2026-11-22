@@ -24,12 +24,12 @@ login() {
 }
 
 mapfile -t COMMITS < <(git log --reverse --format='%H%x09%ae%x09%an%x09%s' "$RANGE")
-declare -A SEEN_BEFORE
+declare -A SEEN_BEFORE=()
 if [[ -n $PREV ]]; then
   while read -r email; do SEEN_BEFORE[$email]=1; done < <(git log --format='%ae' "$PREV")
 fi
 
-declare -A AUTHORS NEW
+declare -A AUTHORS=() NEW=()
 LIST=""
 for line in "${COMMITS[@]}"; do
   IFS=$'\t' read -r sha email name subject <<<"$line"
