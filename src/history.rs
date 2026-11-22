@@ -78,16 +78,21 @@ pub struct Ingested {
     pub thumb: Option<Thumb>,
 }
 
+/// `~/.local/share/cosmic-clipboard` on Linux, `%APPDATA%\Clipstack` on
+/// Windows, `~/Library/Application Support/Clipstack` on macOS.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
+    #[cfg(target_os = "linux")]
+    return std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join(".local/share"))
-        .join("cosmic-clipboard")
+        .join("cosmic-clipboard");
+    #[cfg(not(target_os = "linux"))]
+    dirs::data_dir().unwrap_or_else(|| home().join(".clipstack")).join("Clipstack")
 }
 
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/tmp".into())
+    dirs::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
 fn item_dir(id: u64) -> PathBuf {

@@ -217,12 +217,25 @@ impl DrawingServer {
 }
 
 fn mdns_name() -> Option<String> {
-    if !std::path::Path::new("/run/avahi-daemon/socket").exists() {
+    if cfg!(target_os = "linux") && !std::path::Path::new("/run/avahi-daemon/socket").exists() {
         return None;
     }
-    let name = std::fs::read_to_string("/etc/hostname").ok()?;
-    let name = name.trim();
-    (!name.is_empty()).then(|| format!("{name}.local"))
+    let name = hostname();
+    (!name.is_empty()).then(|| format!("{}.local", name.trim_end_matches(".local")))
+}
+
+/// The computer's name, shown in the web app.
+fn hostname() -> String {
+    #[cfg(target_os = "windows")]
+    return std::env::var("COMPUTERNAME").unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    return std::process::Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_default()
 }
 
 fn lan_ip() -> Option<String> {
@@ -232,8 +245,12 @@ fn lan_ip() -> Option<String> {
     Some(socket.local_addr().ok()?.ip().to_string())
 }
 
-/// `XDG_PICTURES_DIR` from user-dirs.dirs, e.g. `~/Pictures`.
+/// `XDG_PICTURES_DIR` from user-dirs.dirs, e.g. `~/Pictures` (the system's
+/// pictures folder on Windows and macOS).
 pub fn pictures_dir() -> PathBuf {
+    if !cfg!(target_os = "linux") {
+        return dirs::picture_dir().unwrap_or_else(|| home().join("Pictures"));
+    }
     let home = home();
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -254,7 +271,27 @@ pub fn pictures_dir() -> PathBuf {
         .unwrap_or_else(|| home.join("Pictures"))
 }
 
+/// Decides whether a file name belongs to a screenshot.
+pub type NameFilter = fn(&str) -> bool;
+
+/// Where screenshot tools save their files (the screenshot is copied to the
+/// clipboard at the same time), with a filter for the file names.
+pub fn screenshot_dirs() -> Vec<(PathBuf, NameFilter)> {
+    let any: NameFilter = |_| true;
+    let mut out = vec![(pictures_dir().join("Screenshots"), any)];
+    if cfg!(target_os = "macos") {
+        // macOS puts them on the desktop by default.
+        let named: fn(&str) -> bool =
+            |n| ["Screenshot", "Bildschirmfoto", "Screen Shot"].iter().any(|p| n.starts_with(p));
+        out.push((dirs::desktop_dir().unwrap_or_else(|| home().join("Desktop")), named));
+    }
+    out
+}
+
 fn devices_file() -> PathBuf {
+    if !cfg!(target_os = "linux") {
+        return dirs::config_dir().unwrap_or_else(home).join("Clipstack/devices.json");
+    }
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -284,8 +321,7 @@ fn save_devices(devices: &[Device]) {
 }
 
 fn random(buf: &mut [u8]) {
-    let ok = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).is_ok();
-    assert!(ok, "no randomness available");
+    getrandom::fill(buf).expect("no randomness available");
 }
 
 fn new_device_token() -> String {
@@ -498,7 +534,7 @@ fn handle_request(state: &DrawingServer, mut request: Request, on_received: &Rec
         _ if path.starts_with("/api/") && !authorized(state, &request) => text(401, "Device not paired"),
         (Method::Get, "/api/state") => {
             let shared = state.shared.lock().unwrap();
-            let host = std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
+            let host = hostname();
             let body = match &shared.job {
                 Some(job) => serde_json::json!({
                     "id": job.id, "width": job.width, "height": job.height, "host": host

@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Builds Clipstack-x86_64.AppImage in the repository root.
+# Builds Clipstack-<arch>.AppImage (x86_64 or aarch64, the machine's own
+# architecture) in the repository root.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 APP_ID=com.github.jgaertig.CosmicClipboard
+ARCH=${ARCH:-$(uname -m)}
 TOOLS=$ROOT/build/tools
 APPDIR=$ROOT/build/AppDir
-OUT=$ROOT/Clipstack-x86_64.AppImage
+OUT=$ROOT/Clipstack-$ARCH.AppImage
 
 # Pinned, well-established releases (not the moving "continuous" tags).
-APPIMAGETOOL_URL=https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
-RUNTIME_URL=https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+APPIMAGETOOL_URL=https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-$ARCH.AppImage
+RUNTIME_URL=https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$ARCH
 
 mkdir -p "$TOOLS"
-[ -x "$TOOLS/appimagetool" ] || { curl -fL -o "$TOOLS/appimagetool" "$APPIMAGETOOL_URL"; chmod +x "$TOOLS/appimagetool"; }
-[ -f "$TOOLS/runtime-x86_64" ] || curl -fL -o "$TOOLS/runtime-x86_64" "$RUNTIME_URL"
+[ -x "$TOOLS/appimagetool-$ARCH" ] || { curl -fL -o "$TOOLS/appimagetool-$ARCH" "$APPIMAGETOOL_URL"; chmod +x "$TOOLS/appimagetool-$ARCH"; }
+[ -f "$TOOLS/runtime-$ARCH" ] || curl -fL -o "$TOOLS/runtime-$ARCH" "$RUNTIME_URL"
 
 cargo build --release --locked
 TARGET=${CARGO_TARGET_DIR:-target}
@@ -30,6 +32,6 @@ ln -s usr/share/icons/hicolor/scalable/apps/$APP_ID.svg "$APPDIR/$APP_ID.svg"
 ln -s $APP_ID.svg "$APPDIR/.DirIcon"
 ln -s usr/bin/cosmic-clipboard "$APPDIR/AppRun"
 
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOLS/appimagetool" --no-appstream \
-    --runtime-file "$TOOLS/runtime-x86_64" "$APPDIR" "$OUT"
+ARCH=$ARCH APPIMAGE_EXTRACT_AND_RUN=1 "$TOOLS/appimagetool-$ARCH" --no-appstream \
+    --runtime-file "$TOOLS/runtime-$ARCH" "$APPDIR" "$OUT"
 echo "Done: $OUT"

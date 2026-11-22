@@ -2,32 +2,45 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use cosmic::{
     Action, Application, Element, Task, app,
-    cctk::sctk::reexports::client::protocol::wl_output::WlOutput,
     iced::{
-        self, Alignment, Background, Border, Color, Length, Limits, Padding, Point, Shadow, Size, Subscription, Vector,
+        self, Alignment, Background, Border, Color, Length, Padding, Point, Shadow, Size, Subscription, Vector,
         advanced::text::{Ellipsize, EllipsizeHeightLimit},
-        event::{self, Event, wayland},
+        event::{self, Event},
         futures::{SinkExt, StreamExt, channel::mpsc},
         keyboard::{self, Key, key::Named},
         mouse,
-        platform_specific::{
-            runtime::wayland::layer_surface::{IcedOutput, SctkLayerSurfaceSettings},
-            shell::commands::layer_surface::{
-                Anchor, KeyboardInteractivity, Layer, destroy_layer_surface, get_layer_surface,
-            },
-        },
         widget::scrollable::{AbsoluteOffset, Viewport},
         window,
     },
     theme,
     widget::{self, button, column, container, icon, image, mouse_area, qr_code, row, scrollable},
 };
+#[cfg(target_os = "linux")]
+use cosmic::{
+    cctk::sctk::reexports::client::protocol::wl_output::WlOutput,
+    iced::{
+        Limits,
+        event::wayland,
+        platform_specific::{
+            runtime::wayland::layer_surface::{IcedOutput, SctkLayerSurfaceSettings},
+            shell::commands::layer_surface::{
+                Anchor, KeyboardInteractivity, Layer, destroy_layer_surface, get_layer_surface,
+            },
+        },
+    },
+};
 
 use crate::{
     clipboard::{self, Command, CommandSender, CursorPos},
     drawing::{self, DrawingServer},
     history::{self, Entry, History, Kind, Origin},
+    popup,
 };
+
+/// A Wayland output (overlay mode only).
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct WlOutput;
 
 pub const APP_ID: &str = "com.github.jgaertig.CosmicClipboard";
 pub const BACKGROUND_ACTION: &str = "background";
@@ -215,7 +228,15 @@ pub enum Message {
     Hide,
     LocateTimeout(u64),
     Opened,
+    /// The popup window (platforms without layer-shell) exists.
+    PopupOpened(window::Id),
+    /// The popup window gained (true) or lost keyboard focus.
+    PopupFocus(bool),
+    /// The popup lost focus a moment ago.
+    FocusLost(Option<window::Id>),
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     OutputAdded(String, WlOutput),
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     OutputRemoved(WlOutput),
     Search(String),
     Paste(u64),
@@ -284,6 +305,10 @@ pub struct App {
     cursor: Point,
     offset: Vector,
     drag: Option<(Point, Vector)>,
+    /// Where the popup window goes, in physical screen coordinates.
+    popup_at: Option<(i32, i32)>,
+    /// The popup has keyboard focus, and had it since it opened.
+    popup_focus: (bool, bool),
 }
 
 impl Application for App {
@@ -359,7 +384,10 @@ impl Application for App {
             cursor: Point::ORIGIN,
             offset: Vector::ZERO,
             drag: None,
+            popup_at: None,
+            popup_focus: (false, false),
         };
+        popup::init();
         app.reindex();
         let task = if flags.background { Task::none() } else { app.show() };
         let fonts = Task::batch(FONTS.map(|f| cosmic::iced::font::load(f).map(|_| Action::App(Message::Noop))));
@@ -373,6 +401,17 @@ impl Application for App {
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
         if Some(id) != self.surface {
             return widget::space().into();
+        }
+        // A window of its own: the card fills it, the system moves it.
+        if clipboard::popup() {
+            return mouse_area(
+                container(self.card())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .class(theme::Container::custom(card_style)),
+            )
+            .on_middle_press(Message::DragStart)
+            .into();
         }
         let (placement, offset) = (self.placement, self.offset);
         let content = widget::responsive(move |size| {
@@ -401,7 +440,10 @@ impl Application for App {
             Message::Toggle => {
                 return if self.surface.is_some() { self.hide() } else { self.show() };
             }
-            Message::Hide => return self.hide(),
+            Message::Hide => {
+                tracing::debug!("hide requested");
+                return self.hide();
+            }
             Message::LocateTimeout(generation) => {
                 if self.locating == Some(generation) {
                     tracing::info!("pointer position not reported in time");
@@ -409,6 +451,32 @@ impl Application for App {
                 }
             }
             Message::Opened => return self.focus_search(),
+            Message::PopupOpened(id) => {
+                let at = self.popup_at;
+                tracing::debug!("popup opened at {at:?}");
+                return Task::batch([
+                    window::run(id, move |w| popup::show(w, at)).discard(),
+                    window::gain_focus(id),
+                    self.focus_search(),
+                ]);
+            }
+            Message::PopupFocus(focused) => {
+                self.popup_focus = (focused, self.popup_focus.1 || focused);
+                // Clicking elsewhere closes the popup, like a click outside the
+                // overlay. Focus that flickers while the window appears (key
+                // grabs, focus handed over) doesn't count.
+                if !focused && self.popup_focus.1 {
+                    let surface = self.surface;
+                    return Task::perform(async { tokio::time::sleep(Duration::from_millis(150)).await }, move |_| {
+                        Action::App(Message::FocusLost(surface))
+                    });
+                }
+            }
+            Message::FocusLost(surface) if surface == self.surface && !self.popup_focus.0 => {
+                tracing::debug!("popup lost focus");
+                return self.hide();
+            }
+            Message::FocusLost(_) => {}
             Message::OutputAdded(name, output) => {
                 self.outputs.insert(name, output);
             }
@@ -438,7 +506,10 @@ impl Application for App {
                 self.clamp_selection();
                 return self.focus_search();
             }
-            Message::Key(key, modifiers) => return self.on_key(key, modifiers),
+            Message::Key(key, modifiers) => {
+                tracing::trace!("key {key:?}");
+                return self.on_key(key, modifiers);
+            }
             Message::Scrolled(viewport) => {
                 let y = viewport.absolute_offset().y;
                 if (y - self.scroll_y).abs() > 0.5 {
@@ -511,6 +582,11 @@ impl Application for App {
             Message::Hover(id) => {
                 if let Some(i) = self.filtered().iter().position(|e| e.id == id) {
                     self.selected = i;
+                }
+            }
+            Message::DragStart if clipboard::popup() => {
+                if let Some(id) = self.surface {
+                    return window::drag(id);
                 }
             }
             Message::DragStart => self.drag = Some((self.cursor, self.offset)),
@@ -609,7 +685,7 @@ impl Application for App {
                         .map(|m| (m.to_string(), data.clone()))
                         .collect();
                     // Our own selection never ends up in the history.
-                    let _ = backend.0.send(Command::Set { formats: Arc::new(formats) });
+                    let _ = backend.send(Command::Set { formats: Arc::new(formats) });
                     self.code_copied = Some(std::time::Instant::now());
                 }
             }
@@ -625,6 +701,7 @@ impl Application for App {
 
     fn subscription(&self) -> Subscription<Message> {
         let backend = Subscription::batch([Subscription::run(backend_stream), Subscription::run(drawing_stream)]);
+        #[cfg(target_os = "linux")]
         let outputs = event::listen_with(|event, _, _| match event {
             Event::PlatformSpecific(event::PlatformSpecific::Wayland(wayland::Event::Output(event, output))) => {
                 match event {
@@ -637,6 +714,9 @@ impl Application for App {
             }
             _ => None,
         });
+        // Later starts of the app ask the running one to toggle.
+        #[cfg(not(target_os = "linux"))]
+        let outputs = Subscription::run(instance_stream);
         if self.surface.is_none() {
             return Subscription::batch([backend, outputs]);
         }
@@ -646,11 +726,14 @@ impl Application for App {
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left | mouse::Button::Middle)) => {
                 Some(Message::DragEnd)
             }
+            #[cfg(target_os = "linux")]
             Event::PlatformSpecific(event::PlatformSpecific::Wayland(wayland::Event::Layer(
                 wayland::LayerEvent::Focused,
                 ..,
-            )))
-            | Event::Window(window::Event::Opened { .. }) => Some(Message::Opened),
+            ))) => Some(Message::Opened),
+            Event::Window(window::Event::Opened { .. }) => Some(Message::Opened),
+            Event::Window(window::Event::Focused) if clipboard::popup() => Some(Message::PopupFocus(true)),
+            Event::Window(window::Event::Unfocused) if clipboard::popup() => Some(Message::PopupFocus(false)),
             _ => None,
         });
         let animating = !self.preview_anim.done() || !self.qr_anim.done();
@@ -667,6 +750,7 @@ impl Application for App {
         Subscription::batch([backend, outputs, keys, tick, frames])
     }
 
+    #[cfg(target_os = "linux")]
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Action<Message>> {
         match msg.msg {
             cosmic::dbus_activation::Details::ActivateAction { action, .. } if action == BACKGROUND_ACTION => {
@@ -692,7 +776,7 @@ impl App {
         let generation = self.generation;
         self.locating = Some(generation);
         if let Some(backend) = &self.backend {
-            let _ = backend.0.send(Command::LocateCursor);
+            let _ = backend.send(Command::LocateCursor);
         }
         Task::perform(async { tokio::time::sleep(Duration::from_millis(300)).await }, move |_| {
             Action::App(Message::LocateTimeout(generation))
@@ -704,6 +788,81 @@ impl App {
         if self.surface.is_some() {
             return Task::none();
         }
+        self.query.clear();
+        self.selected = 0;
+        self.scroll_y = 0.0;
+        self.offset = Vector::ZERO;
+        self.drag = None;
+        let reset_scroll = cosmic::iced::widget::scrollable::scroll_to(
+            self.scroll_id.clone(),
+            AbsoluteOffset { x: None, y: Some(0.0) },
+        );
+        if clipboard::popup() {
+            let (id, opened) = window::open(self.popup_settings(cursor));
+            self.surface = Some(id);
+            self.popup_focus = (false, false);
+            return Task::batch([opened.map(|id| Action::App(Message::PopupOpened(id))), reset_scroll]);
+        }
+        #[cfg(target_os = "linux")]
+        return Task::batch([
+            self.open_overlay(cursor),
+            widget::text_input::focus(self.search_id.clone()),
+            reset_scroll,
+        ]);
+        #[cfg(not(target_os = "linux"))]
+        Task::none()
+    }
+
+    /// The popup window: card sized, next to the pointer (or caret), flipped
+    /// like a context menu where it wouldn't fit on the monitor.
+    fn popup_settings(&mut self, cursor: Option<CursorPos>) -> window::Settings {
+        let size = Size::new(CARD_W, CARD_H);
+        let spot = cursor.and_then(|c| c.screen.map(|s| (c, s)));
+        self.popup_at = None;
+        let position = match spot {
+            Some((c, s)) => {
+                // Placement works in logical pixels relative to the monitor.
+                let k = s.scale.max(0.25);
+                let area = Size::new(s.width / k, s.height / k);
+                let at = Point::new((c.x - s.x) / k, (c.y - s.y) / k);
+                let above = c.above.map(|a| (a - s.y) / k);
+                let (x, y, _, _) = place(Placement::At(at, above), Vector::ZERO, area);
+                let (px, py) = (s.x + x * k, s.y + y * k);
+                self.popup_at = Some((px.round() as i32, py.round() as i32));
+                window::Position::Specific(Point::new(px / k, py / k))
+            }
+            None => window::Position::Centered,
+        };
+        #[allow(unused_mut)]
+        let mut platform_specific = window::settings::PlatformSpecific::default();
+        #[cfg(target_os = "windows")]
+        {
+            platform_specific.skip_taskbar = true;
+            platform_specific.undecorated_shadow = true;
+            platform_specific.drag_and_drop = false;
+            platform_specific.corner_preference = window::settings::platform::CornerPreference::Round;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            platform_specific.application_id = APP_ID.to_string();
+        }
+        window::Settings {
+            size,
+            position,
+            resizable: false,
+            decorations: false,
+            // The software renderer can't draw into translucent X11 windows;
+            // rounded corners come from the system (Windows 11, macOS).
+            transparent: false,
+            level: window::Level::AlwaysOnTop,
+            exit_on_close_request: false,
+            platform_specific,
+            ..Default::default()
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn open_overlay(&mut self, cursor: Option<CursorPos>) -> Task<Action<Message>> {
         let output = cursor
             .as_ref()
             .and_then(|c| c.output.as_ref())
@@ -713,31 +872,19 @@ impl App {
         self.placement = cursor.map_or(Placement::Center, |c| Placement::At(Point::new(c.x, c.y), c.above));
         let id = window::Id::unique();
         self.surface = Some(id);
-        self.query.clear();
-        self.selected = 0;
-        self.scroll_y = 0.0;
-        self.offset = Vector::ZERO;
-        self.drag = None;
-        Task::batch([
-            get_layer_surface(SctkLayerSurfaceSettings {
-                id,
-                layer: Layer::Overlay,
-                keyboard_interactivity: KeyboardInteractivity::Exclusive,
-                input_zone: None,
-                anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
-                output,
-                namespace: "cosmic-clipboard".into(),
-                size: Some((None, None)),
-                exclusive_zone: -1,
-                size_limits: Limits::NONE.min_width(1.0).min_height(1.0),
-                ..Default::default()
-            }),
-            widget::text_input::focus(self.search_id.clone()),
-            cosmic::iced::widget::scrollable::scroll_to(
-                self.scroll_id.clone(),
-                AbsoluteOffset { x: None, y: Some(0.0) },
-            ),
-        ])
+        get_layer_surface(SctkLayerSurfaceSettings {
+            id,
+            layer: Layer::Overlay,
+            keyboard_interactivity: KeyboardInteractivity::Exclusive,
+            input_zone: None,
+            anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+            output,
+            namespace: "cosmic-clipboard".into(),
+            size: Some((None, None)),
+            exclusive_zone: -1,
+            size_limits: Limits::NONE.min_width(1.0).min_height(1.0),
+            ..Default::default()
+        })
     }
 
     fn close_preview(&mut self) {
@@ -779,14 +926,22 @@ impl App {
         self.preview = None;
         self.preview_anim = Anim::default();
         self.thumb_hover = None;
-        self.surface.take().map_or_else(Task::none, destroy_layer_surface)
+        let Some(id) = self.surface.take() else { return Task::none() };
+        if clipboard::popup() {
+            popup::hidden();
+            return window::close(id);
+        }
+        #[cfg(target_os = "linux")]
+        return destroy_layer_surface(id);
+        #[cfg(not(target_os = "linux"))]
+        Task::none()
     }
 
     fn on_clipboard(&mut self, event: clipboard::Event) -> Task<Action<Message>> {
         match event {
             clipboard::Event::Ready(sender) => {
                 if self.locating.is_some() {
-                    let _ = sender.0.send(Command::LocateCursor);
+                    let _ = sender.send(Command::LocateCursor);
                 }
                 self.backend = Some(sender);
                 self.backend_error = None;
@@ -803,6 +958,7 @@ impl App {
                 }
             }
             clipboard::Event::Captured(ingested) => self.add_ingested(ingested),
+            clipboard::Event::Toggle => return self.update(Message::Toggle),
             clipboard::Event::Cleared => {
                 if let Some(entry) = self.history.entries.first() {
                     self.send(entry);
@@ -816,7 +972,7 @@ impl App {
         let (Some(backend), Some(formats)) = (&self.backend, history::formats(entry)) else {
             return false;
         };
-        backend.0.send(Command::Set { formats }).is_ok()
+        backend.send(Command::Set { formats })
     }
 
     /// Owns the clipboard with the entry, closes the overlay and lets the
@@ -826,7 +982,7 @@ impl App {
             && self.send(entry)
         {
             if let Some(backend) = &self.backend {
-                let _ = backend.0.send(Command::Paste);
+                let _ = backend.send(Command::Paste);
             }
             self.history.bump(id);
             self.reindex();
@@ -869,6 +1025,12 @@ impl App {
 
     fn on_key(&mut self, key: Key, modifiers: keyboard::Modifiers) -> Task<Action<Message>> {
         self.close_preview();
+        // Ctrl shortcuts; on macOS Cmd works as well.
+        let modifiers = if modifiers.logo() && cfg!(target_os = "macos") {
+            modifiers | keyboard::Modifiers::CTRL
+        } else {
+            modifiers
+        };
         let selected_id = self.filtered().get(self.selected).map(|e| e.id);
         match key {
             Key::Named(Named::Escape) if self.qr_zoom => return self.update(Message::QrZoom(false)),
@@ -1551,6 +1713,24 @@ fn backend_stream() -> impl cosmic::iced::futures::Stream<Item = Message> {
     })
 }
 
+#[cfg(not(target_os = "linux"))]
+fn instance_stream() -> impl cosmic::iced::futures::Stream<Item = Message> {
+    cosmic::iced::stream::channel(8, async move |mut output: mpsc::Sender<Message>| {
+        let (tx, mut rx) = mpsc::unbounded();
+        if let Err(err) = crate::instance::listen(move |action| {
+            if action != BACKGROUND_ACTION {
+                let _ = tx.unbounded_send(Message::Toggle);
+            }
+        }) {
+            tracing::warn!("single instance listener: {err}");
+        }
+        while let Some(message) = rx.next().await {
+            let _ = output.send(message).await;
+        }
+        cosmic::iced::futures::future::pending::<()>().await;
+    })
+}
+
 fn drawing_stream() -> impl cosmic::iced::futures::Stream<Item = Message> {
     cosmic::iced::stream::channel(8, async move |mut output: mpsc::Sender<Message>| {
         let (tx, mut rx) = mpsc::unbounded();
@@ -1613,13 +1793,15 @@ fn image_title(e: &Entry) -> String {
 /// A screenshot tool saved a file in Pictures/Screenshots a moment ago (COSMIC
 /// copies the screenshot to the clipboard at the same time).
 fn screenshot_just_taken() -> bool {
-    let Ok(dir) = std::fs::read_dir(drawing::pictures_dir().join("Screenshots")) else { return false };
-    dir.flatten().any(|f| {
-        f.metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age < Duration::from_secs(15))
+    drawing::screenshot_dirs().into_iter().any(|(dir, named)| {
+        let Ok(dir) = std::fs::read_dir(dir) else { return false };
+        dir.flatten().filter(|f| named(&f.file_name().to_string_lossy())).any(|f| {
+            f.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age < Duration::from_secs(15))
+        })
     })
 }
 
@@ -1632,7 +1814,17 @@ fn preview_after_rest(id: u64, generation: u64) -> Task<Action<Message>> {
 }
 
 fn notify(summary: &str, body: &str) {
+    #[cfg(target_os = "linux")]
     let _ = std::process::Command::new("notify-send").args(["-a", "Clipstack", "-i", APP_ID, summary, body]).spawn();
+    #[cfg(target_os = "macos")]
+    {
+        let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+        let script =
+            format!("display notification {} with title \"Clipstack\" subtitle {}", quote(body), quote(summary));
+        let _ = std::process::Command::new("osascript").args(["-e", &script]).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    clipboard::notify(summary, body);
 }
 
 fn thumb_handle(thumb: history::Thumb) -> image::Handle {

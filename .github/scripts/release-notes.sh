@@ -49,6 +49,17 @@ echo "## New release: $TAG"
 echo
 echo "$(plural "$n" commit) by $(plural "$c" contributor)${PREV:+ since $PREV}."
 echo
+echo "### Downloads"
+echo
+echo "| System | File |"
+echo "| --- | --- |"
+echo "| Linux (any distribution) | \`Clipstack-x86_64.AppImage\`, \`Clipstack-aarch64.AppImage\` |"
+echo "| Debian, Ubuntu, Mint, Pop!_OS | \`Clipstack-amd64.deb\`, \`Clipstack-arm64.deb\` |"
+echo "| Fedora, openSUSE, RHEL | \`Clipstack-x86_64.rpm\`, \`Clipstack-aarch64.rpm\` |"
+echo "| Linux (plain binary) | \`Clipstack-linux-x86_64.tar.gz\`, \`Clipstack-linux-aarch64.tar.gz\` |"
+echo "| Windows 10/11 | \`Clipstack-Setup-x64.exe\` (installer), \`Clipstack-windows-x64.zip\` (portable) |"
+echo "| macOS 11+ (Apple Silicon and Intel) | \`Clipstack-macos.dmg\` |"
+echo
 echo "<details>"
 echo "<summary>Commits</summary>"
 echo
