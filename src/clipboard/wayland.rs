@@ -262,6 +262,10 @@ struct CursorProbe {
 /// within the binding roundtrip; without a text field nothing comes at all.
 const CARET_WAIT: Duration = Duration::from_millis(90);
 
+/// How long the clipboard has to stay empty before the newest entry is
+/// restored.
+const CLEAR_GRACE: Duration = Duration::from_millis(250);
+
 struct State {
     conn: Connection,
     qh: QueueHandle<State>,
@@ -288,6 +292,7 @@ struct State {
     pending_locate: bool,
     loop_handle: calloop::LoopHandle<'static, State>,
     probe_generation: u64,
+    selection_generation: u64,
 }
 
 pub fn spawn(sink: EventSink) {
@@ -365,6 +370,7 @@ fn run(sink: EventSink) -> Result<(), String> {
         pending_locate: false,
         loop_handle: event_loop.handle(),
         probe_generation: 0,
+        selection_generation: 0,
     };
     // sctk only reports seats announced after startup via `new_seat`.
     if let Some(seat) = state.seats.seats().next() {
@@ -414,6 +420,11 @@ impl State {
     fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::Set { formats } => self.set_selection(formats),
+            Command::Restore { formats } => {
+                if self.offer.is_none() && self.source.is_none() {
+                    self.set_selection(formats);
+                }
+            }
             Command::Paste => self.pending_paste = true,
             Command::LocateCursor => self.pending_locate = true,
         }
@@ -578,12 +589,24 @@ impl State {
     }
 
     fn on_selection(&mut self, offer: Option<Offer>) {
+        self.selection_generation += 1;
         if let Some(old) = self.offer.take() {
             old.destroy();
         }
         let Some(offer) = offer else {
             if self.source.is_none() {
-                (self.sink)(Event::Cleared);
+                // Chromium and Electron destroy their old source before
+                // setting the new one, so a new selection usually follows.
+                let generation = self.selection_generation;
+                let _ = self.loop_handle.insert_source(
+                    Timer::from_duration(CLEAR_GRACE),
+                    move |_, _, state: &mut State| {
+                        if state.selection_generation == generation {
+                            (state.sink)(Event::Cleared);
+                        }
+                        TimeoutAction::Drop
+                    },
+                );
             }
             return;
         };

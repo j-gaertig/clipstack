@@ -69,6 +69,9 @@ pub type Formats = Arc<Vec<(String, Arc<Vec<u8>>)>>;
 pub enum Command {
     /// Take ownership of the clipboard with the given formats.
     Set { formats: Formats },
+    /// Like `Set`, but only if the clipboard is still empty: by the time the
+    /// command arrives, an application may already have set a new selection.
+    Restore { formats: Formats },
     /// Simulate the paste shortcut in the focused window.
     Paste,
     /// Report the current pointer position (answered with `Event::Cursor`).

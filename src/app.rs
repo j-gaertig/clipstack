@@ -960,8 +960,10 @@ impl App {
             clipboard::Event::Captured(ingested) => self.add_ingested(ingested),
             clipboard::Event::Toggle => return self.update(Message::Toggle),
             clipboard::Event::Cleared => {
-                if let Some(entry) = self.history.entries.first() {
-                    self.send(entry);
+                if let (Some(backend), Some(formats)) =
+                    (&self.backend, self.history.entries.first().and_then(history::formats))
+                {
+                    backend.send(Command::Restore { formats });
                 }
             }
         }

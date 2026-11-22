@@ -230,7 +230,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 impl State {
     fn on_command(&mut self, cmd: Command) {
         match cmd {
-            Command::Set { formats } => {
+            Command::Set { formats } | Command::Restore { formats } => {
                 if let Err(err) = self.set(&formats) {
                     tracing::warn!("cannot set the clipboard: {err}");
                 }

@@ -53,7 +53,7 @@ fn run(sink: EventSink) {
     let mut seen = -1;
     loop {
         match rx.recv_timeout(POLL) {
-            Ok(Command::Set { formats }) => {
+            Ok(Command::Set { formats } | Command::Restore { formats }) => {
                 set(&pasteboard, &formats);
                 seen = pasteboard.changeCount();
             }

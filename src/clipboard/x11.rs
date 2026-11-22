@@ -268,6 +268,11 @@ impl State {
                 self.owned = Some(formats);
                 self.conn.set_selection_owner(self.win, self.clipboard, CURRENT_TIME)?;
             }
+            Msg::Cmd(Command::Restore { formats }) => {
+                if self.conn.get_selection_owner(self.clipboard)?.reply()?.owner == NONE {
+                    return self.on_msg(Msg::Cmd(Command::Set { formats }));
+                }
+            }
             Msg::Cmd(Command::Paste) => {
                 let delay =
                     std::env::var("COSMIC_CLIPBOARD_PASTE_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(160);
