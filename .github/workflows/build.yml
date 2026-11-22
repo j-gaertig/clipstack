@@ -1,9 +1,6 @@
 name: Build
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -46,7 +43,7 @@ jobs:
 
       - name: Set version
         if: inputs.version != ''
-        run: .github/scripts/set-version.sh "${{ inputs.version }}"
+        run: bash .github/scripts/set-version.sh "${{ inputs.version }}"
 
       - name: Test
         run: cargo test --locked
@@ -93,7 +90,7 @@ jobs:
 
       - name: Set version
         if: inputs.version != ''
-        run: .github/scripts/set-version.sh "${{ inputs.version }}"
+        run: bash .github/scripts/set-version.sh "${{ inputs.version }}"
 
       - name: Test
         run: cargo test --locked
@@ -141,7 +138,7 @@ jobs:
 
       - name: Set version
         if: inputs.version != ''
-        run: .github/scripts/set-version.sh "${{ inputs.version }}"
+        run: bash .github/scripts/set-version.sh "${{ inputs.version }}"
 
       - name: Test
         run: cargo test --locked
