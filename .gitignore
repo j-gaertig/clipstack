@@ -1,9 +1,10 @@
 # Cargo
 /target/
 
-# AppImage build (tools, AppDir) and output
+# Package builds (tools, staging) and output
 /build/
-*.AppImage
+/dist/
+/Clipstack-*
 
 # Editors and OS
 .idea/

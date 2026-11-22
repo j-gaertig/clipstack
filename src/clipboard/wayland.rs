@@ -1,11 +1,12 @@
-//! Wayland side: watches the clipboard via `ext-data-control-v1`, owns the
-//! selection when an entry is restored and simulates the paste shortcut via
-//! `zwp-virtual-keyboard-v1`.
+//! Wayland side: watches the clipboard via `ext-data-control-v1` (or
+//! `wlr-data-control-unstable-v1`), owns the selection when an entry is
+//! restored and simulates the paste shortcut via `zwp-virtual-keyboard-v1`
+//! (or the remote desktop portal where that is missing).
 
 use std::{
     fs::File,
     io::{Read, Write},
-    os::fd::{AsFd, OwnedFd},
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
@@ -25,12 +26,13 @@ use cosmic::cctk::{
             calloop_wayland_source::WaylandSource,
             client::{
                 Connection, Dispatch, Proxy, QueueHandle, event_created_child,
-                globals::registry_queue_init,
+                globals::{GlobalListContents, registry_queue_init},
                 protocol::{
                     wl_callback::{self, WlCallback},
                     wl_compositor::WlCompositor,
                     wl_output::{self, WlOutput},
                     wl_pointer::WlPointer,
+                    wl_registry::{self, WlRegistry},
                     wl_seat::WlSeat,
                     wl_surface::WlSurface,
                 },
@@ -43,6 +45,12 @@ use cosmic::cctk::{
             protocols_misc::zwp_virtual_keyboard_v1::client::{
                 zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
                 zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+            },
+            protocols_wlr::data_control::v1::client::{
+                zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1},
+                zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
+                zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1},
+                zwlr_data_control_source_v1::{self, ZwlrDataControlSourceV1},
             },
         },
         registry::{ProvidesRegistryState, RegistryState},
@@ -69,12 +77,11 @@ use cosmic::cctk::{
     },
 };
 
-use crate::history::{self, Ingested};
-
-/// Mime type offered by our own sources so we can recognise (and ignore) them.
-pub const MARKER_MIME: &str = "application/x-cosmic-clipboard-history";
-const PASSWORD_HINT_MIME: &str = "x-kde-passwordManagerHint";
-const MAX_FORMAT_BYTES: usize = 64 * 1024 * 1024;
+use super::{
+    Command, CommandSender, CursorPos, Event, EventSink, Formats, MARKER_MIME, MAX_FORMAT_BYTES, is_terminal,
+    wanted_mimes,
+};
+use crate::history;
 
 /// Our own tiny keymap for the virtual keyboard, so the simulated shortcut
 /// is independent of the user's layout. The seat keymap can't be reused: it
@@ -110,84 +117,128 @@ fn paste_keymap() -> std::io::Result<(OwnedFd, u32)> {
     Ok((file.into(), data.len() as u32))
 }
 
-const KEY_LEFTCTRL: u32 = 29;
-const KEY_LEFTSHIFT: u32 = 42;
-const KEY_V: u32 = 47;
-
-const TERMINALS: &[&str] = &[
-    "com.system76.cosmicterm",
-    "alacritty",
-    "kitty",
-    "foot",
-    "footclient",
-    "org.wezfurlong.wezterm",
-    "wezterm",
-    "org.gnome.terminal",
-    "org.gnome.console",
-    "org.gnome.ptyxis",
-    "org.kde.konsole",
-    "konsole",
-    "com.mitchellh.ghostty",
-    "ghostty",
-    "xterm",
-    "terminator",
-    "tilix",
-    "com.gexperts.tilix",
-    "xfce4-terminal",
-    "dev.warp.warp",
-    "io.elementary.terminal",
-    "blackbox",
-    "com.raggesilver.blackbox",
-    "rio",
-];
-
-pub type Formats = Arc<Vec<(String, Arc<Vec<u8>>)>>;
-
-pub enum Command {
-    /// Take ownership of the clipboard with the given formats.
-    Set { formats: Formats },
-    /// Simulate the paste shortcut in the focused window.
-    Paste,
-    /// Report the current pointer position (answered with `Event::Cursor`).
-    LocateCursor,
-}
-
-/// Pointer position in logical coordinates of the output it is on.
-#[derive(Debug, Clone)]
-pub struct CursorPos {
-    pub output: Option<String>,
-    pub x: f32,
-    pub y: f32,
-    /// Top of the text caret: if the card doesn't fit below, it goes above
-    /// this line instead of covering the text being typed.
-    pub above: Option<f32>,
-}
-
-#[derive(Clone)]
-pub struct CommandSender(pub channel::Sender<Command>);
-
-impl std::fmt::Debug for CommandSender {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("CommandSender")
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Event {
-    Ready(CommandSender),
-    Captured(Arc<Ingested>),
-    /// The clipboard became empty (e.g. the owning application quit).
-    Cleared,
-    Cursor(Option<CursorPos>),
-    Failed(String),
-}
-
-pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
+pub(super) const KEY_LEFTCTRL: u32 = 29;
+pub(super) const KEY_LEFTSHIFT: u32 = 42;
+pub(super) const KEY_V: u32 = 47;
 
 #[derive(Default)]
 struct OfferData(Mutex<Vec<String>>);
 
 struct SourceData(Formats);
+
+/// The data-control objects of either protocol version: `ext` (current) or
+/// `wlr` (older KDE Plasma and wlroots compositors).
+#[derive(Clone, PartialEq)]
+enum Manager {
+    Ext(ExtDataControlManagerV1),
+    Wlr(ZwlrDataControlManagerV1),
+}
+
+#[derive(Clone, PartialEq)]
+enum Device {
+    Ext(ExtDataControlDeviceV1),
+    Wlr(ZwlrDataControlDeviceV1),
+}
+
+#[derive(Clone, PartialEq)]
+enum Offer {
+    Ext(ExtDataControlOfferV1),
+    Wlr(ZwlrDataControlOfferV1),
+}
+
+#[derive(Clone, PartialEq)]
+enum Source {
+    Ext(ExtDataControlSourceV1),
+    Wlr(ZwlrDataControlSourceV1),
+}
+
+impl Manager {
+    fn get_data_device(&self, seat: &WlSeat, qh: &QueueHandle<State>) -> Device {
+        match self {
+            Self::Ext(m) => Device::Ext(m.get_data_device(seat, qh, ())),
+            Self::Wlr(m) => Device::Wlr(m.get_data_device(seat, qh, ())),
+        }
+    }
+
+    fn create_data_source(&self, qh: &QueueHandle<State>, data: SourceData) -> Source {
+        match self {
+            Self::Ext(m) => Source::Ext(m.create_data_source(qh, data)),
+            Self::Wlr(m) => Source::Wlr(m.create_data_source(qh, data)),
+        }
+    }
+}
+
+impl Device {
+    fn set_selection(&self, source: &Source) {
+        match (self, source) {
+            (Self::Ext(d), Source::Ext(s)) => d.set_selection(Some(s)),
+            (Self::Wlr(d), Source::Wlr(s)) => d.set_selection(Some(s)),
+            _ => {}
+        }
+    }
+
+    fn destroy(&self) {
+        match self {
+            Self::Ext(d) => d.destroy(),
+            Self::Wlr(d) => d.destroy(),
+        }
+    }
+}
+
+impl Offer {
+    fn mimes(&self) -> Vec<String> {
+        let data = match self {
+            Self::Ext(o) => o.data::<OfferData>(),
+            Self::Wlr(o) => o.data::<OfferData>(),
+        };
+        data.map(|d| d.0.lock().unwrap().clone()).unwrap_or_default()
+    }
+
+    fn receive(&self, mime: String, fd: BorrowedFd<'_>) {
+        match self {
+            Self::Ext(o) => o.receive(mime, fd),
+            Self::Wlr(o) => o.receive(mime, fd),
+        }
+    }
+
+    fn destroy(&self) {
+        match self {
+            Self::Ext(o) => o.destroy(),
+            Self::Wlr(o) => o.destroy(),
+        }
+    }
+}
+
+impl Source {
+    fn offer(&self, mime: String) {
+        match self {
+            Self::Ext(s) => s.offer(mime),
+            Self::Wlr(s) => s.offer(mime),
+        }
+    }
+}
+
+/// Whether the compositor has everything the overlay needs (layer-shell and
+/// a data-control protocol). `None` if it can't be reached at all.
+pub fn probe() -> Option<bool> {
+    struct Probe;
+    impl Dispatch<WlRegistry, GlobalListContents> for Probe {
+        fn event(
+            _: &mut Self,
+            _: &WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    let conn = Connection::connect_to_env().ok()?;
+    let (globals, _queue) = registry_queue_init::<Probe>(&conn).ok()?;
+    let names: Vec<String> = globals.contents().with_list(|l| l.iter().map(|g| g.interface.clone()).collect());
+    let has = |name: &str| names.iter().any(|n| n == name);
+    Some(has("zwlr_layer_shell_v1") && (has("ext_data_control_manager_v1") || has("zwlr_data_control_manager_v1")))
+}
 
 /// Wayland has no API to query the pointer position, but a cursor capture
 /// session reports it right away, even when the pointer doesn't move.
@@ -222,15 +273,15 @@ struct State {
     pointer: Option<WlPointer>,
     probe: Option<CursorProbe>,
     toplevels: Option<ToplevelInfoState>,
-    manager: ExtDataControlManagerV1,
+    manager: Manager,
     vk_manager: Option<ZwpVirtualKeyboardManagerV1>,
     ime_manager: Option<ZwpInputMethodManagerV2>,
     compositor: Option<WlCompositor>,
     seat: Option<WlSeat>,
-    device: Option<ExtDataControlDeviceV1>,
+    device: Option<Device>,
     vk: Option<ZwpVirtualKeyboardV1>,
-    offer: Option<ExtDataControlOfferV1>,
-    source: Option<ExtDataControlSourceV1>,
+    offer: Option<Offer>,
+    source: Option<Source>,
     sink: EventSink,
     started: Instant,
     pending_paste: bool,
@@ -256,13 +307,16 @@ fn run(sink: EventSink) -> Result<(), String> {
     let (globals, queue) = registry_queue_init::<State>(&conn).map_err(|e| format!("registry: {e}"))?;
     let qh = queue.handle();
 
-    let manager: ExtDataControlManagerV1 =
-        globals.bind(&qh, 1..=1, ()).map_err(|_| "The compositor does not support ext-data-control-v1".to_string())?;
+    let manager = globals
+        .bind(&qh, 1..=1, ())
+        .map(Manager::Ext)
+        .or_else(|_| globals.bind(&qh, 1..=2, ()).map(Manager::Wlr))
+        .map_err(|_| "The compositor does not support ext-data-control-v1".to_string())?;
     let vk_manager: Option<ZwpVirtualKeyboardManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let ime_manager: Option<ZwpInputMethodManagerV2> = globals.bind(&qh, 1..=1, ()).ok();
     let compositor: Option<WlCompositor> = globals.bind(&qh, 1..=5, ()).ok();
     if vk_manager.is_none() {
-        tracing::warn!("zwp_virtual_keyboard_manager_v1 unavailable; auto paste disabled");
+        tracing::info!("zwp_virtual_keyboard_manager_v1 unavailable; pasting through the remote desktop portal");
     }
 
     let registry = RegistryState::new(&globals);
@@ -328,7 +382,7 @@ fn run(sink: EventSink) -> Result<(), String> {
         state.vk_manager.is_some(),
         state.toplevels.is_some()
     );
-    sink(Event::Ready(CommandSender(tx)));
+    sink(Event::Ready(CommandSender::new(move |cmd| tx.send(cmd).is_ok())));
 
     let handle = event_loop.handle();
     loop {
@@ -458,6 +512,7 @@ impl State {
             x: (geo.x + caret.0) as f32,
             y: (geo.y + caret.1 + caret.3.max(16)) as f32 + 4.0,
             above: Some((geo.y + caret.1) as f32 - 16.0),
+            screen: None,
         })
     }
 
@@ -468,7 +523,7 @@ impl State {
             source.offer(mime.clone());
         }
         source.offer(MARKER_MIME.to_string());
-        device.set_selection(Some(&source));
+        device.set_selection(&source);
         // The previous source receives `cancelled` and is destroyed there.
         self.source = Some(source);
         let _ = self.conn.flush();
@@ -492,9 +547,8 @@ impl State {
         };
         toplevels.toplevels().find(|t| t.state.contains(&zcosmic_toplevel_handle_v1::State::Activated)).is_some_and(
             |t| {
-                let app_id = t.app_id.to_lowercase();
-                tracing::debug!("focused app: {app_id}");
-                TERMINALS.iter().any(|term| app_id == *term) || app_id.contains("terminal") || app_id.ends_with(".term")
+                tracing::debug!("focused app: {}", t.app_id);
+                is_terminal(&t.app_id)
             },
         )
     }
@@ -502,7 +556,7 @@ impl State {
     fn paste(&mut self) {
         let shift = self.focused_app_is_terminal();
         let Some(vk) = self.ensure_virtual_keyboard() else {
-            tracing::warn!("cannot simulate paste: no virtual keyboard");
+            super::portal::paste(shift);
             return;
         };
         let mut t = self.started.elapsed().as_millis() as u32;
@@ -523,7 +577,7 @@ impl State {
         let _ = self.conn.flush();
     }
 
-    fn on_selection(&mut self, offer: Option<ExtDataControlOfferV1>) {
+    fn on_selection(&mut self, offer: Option<Offer>) {
         if let Some(old) = self.offer.take() {
             old.destroy();
         }
@@ -533,7 +587,7 @@ impl State {
             }
             return;
         };
-        let mimes = offer.data::<OfferData>().map(|d| d.0.lock().unwrap().clone()).unwrap_or_default();
+        let mimes = offer.mimes();
         tracing::debug!("new selection: {mimes:?}");
         self.offer = Some(offer.clone());
 
@@ -608,7 +662,7 @@ fn to_logical(info: Option<OutputInfo>, x: i32, y: i32) -> CursorPos {
             }
         }
     }
-    CursorPos { output: info.and_then(|i| i.name), x: fx, y: fy, above: None }
+    CursorPos { output: info.and_then(|i| i.name), x: fx, y: fy, above: None, screen: None }
 }
 
 /// Reads every pipe concurrently (sources may write them in any order) with a
@@ -641,112 +695,100 @@ fn read_all(pipes: Vec<(String, std::io::PipeReader)>) -> Vec<(String, Vec<u8>)>
     results.into_iter().map(|(_, m, d)| (m, d)).collect()
 }
 
-fn wanted_mimes(mimes: &[String]) -> Vec<String> {
-    let has = |m: &str| mimes.iter().any(|x| x == m);
-    if has(PASSWORD_HINT_MIME) {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    if let Some(text) =
-        ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT"].into_iter().find(|m| has(m))
-    {
-        out.push(text.to_string());
-    }
-    for extra in ["text/html", "text/uri-list", "x-special/gnome-copied-files"] {
-        if has(extra) {
-            out.push(extra.to_string());
+/// Dispatch for one data-control protocol version (`ext` or `wlr`); both
+/// have the same requests and events.
+macro_rules! data_control {
+    ($variant:ident, $manager:ty, $device:ty, $device_mod:ident, $offer:ty, $offer_mod:ident, $source:ty, $source_mod:ident) => {
+        impl Dispatch<$manager, ()> for State {
+            fn event(_: &mut Self, _: &$manager, _: <$manager as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
         }
-    }
-    let image = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]
-        .into_iter()
-        .find(|m| has(m))
-        .map(str::to_string)
-        .or_else(|| mimes.iter().find(|m| m.starts_with("image/") && !m.contains("svg")).cloned());
-    out.extend(image);
-    out
-}
 
-impl Dispatch<ExtDataControlManagerV1, ()> for State {
-    fn event(
-        _: &mut Self,
-        _: &ExtDataControlManagerV1,
-        _: <ExtDataControlManagerV1 as Proxy>::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<ExtDataControlDeviceV1, ()> for State {
-    fn event(
-        state: &mut Self,
-        device: &ExtDataControlDeviceV1,
-        event: ext_data_control_device_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            ext_data_control_device_v1::Event::Selection { id } => state.on_selection(id),
-            ext_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => offer.destroy(),
-            ext_data_control_device_v1::Event::Finished => {
-                device.destroy();
-                if state.device.as_ref() == Some(device) {
-                    state.device = None;
+        impl Dispatch<$device, ()> for State {
+            fn event(
+                state: &mut Self,
+                device: &$device,
+                event: $device_mod::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                match event {
+                    $device_mod::Event::Selection { id } => state.on_selection(id.map(Offer::$variant)),
+                    $device_mod::Event::PrimarySelection { id: Some(offer) } => offer.destroy(),
+                    $device_mod::Event::Finished => {
+                        device.destroy();
+                        if state.device == Some(Device::$variant(device.clone())) {
+                            state.device = None;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
+
+            event_created_child!(State, $device, [
+                $device_mod::EVT_DATA_OFFER_OPCODE => ($offer, OfferData::default())
+            ]);
         }
-    }
 
-    event_created_child!(State, ExtDataControlDeviceV1, [
-        ext_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (ExtDataControlOfferV1, OfferData::default())
-    ]);
-}
-
-impl Dispatch<ExtDataControlOfferV1, OfferData> for State {
-    fn event(
-        _: &mut Self,
-        _: &ExtDataControlOfferV1,
-        event: ext_data_control_offer_v1::Event,
-        data: &OfferData,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let ext_data_control_offer_v1::Event::Offer { mime_type } = event {
-            data.0.lock().unwrap().push(mime_type);
-        }
-    }
-}
-
-impl Dispatch<ExtDataControlSourceV1, SourceData> for State {
-    fn event(
-        state: &mut Self,
-        source: &ExtDataControlSourceV1,
-        event: ext_data_control_source_v1::Event,
-        data: &SourceData,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            ext_data_control_source_v1::Event::Send { mime_type, fd } => {
-                let payload = data.0.iter().find(|(m, _)| *m == mime_type).map(|(_, d)| d.clone()).unwrap_or_default();
-                std::thread::spawn(move || {
-                    let mut file = File::from(fd);
-                    let _ = file.write_all(&payload);
-                });
-            }
-            ext_data_control_source_v1::Event::Cancelled => {
-                source.destroy();
-                if state.source.as_ref() == Some(source) {
-                    state.source = None;
+        impl Dispatch<$offer, OfferData> for State {
+            fn event(_: &mut Self, _: &$offer, event: $offer_mod::Event, data: &OfferData, _: &Connection, _: &QueueHandle<Self>) {
+                if let $offer_mod::Event::Offer { mime_type } = event {
+                    data.0.lock().unwrap().push(mime_type);
                 }
             }
-            _ => {}
         }
-    }
+
+        impl Dispatch<$source, SourceData> for State {
+            fn event(
+                state: &mut Self,
+                source: &$source,
+                event: $source_mod::Event,
+                data: &SourceData,
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                match event {
+                    $source_mod::Event::Send { mime_type, fd } => {
+                        let payload =
+                            data.0.iter().find(|(m, _)| *m == mime_type).map(|(_, d)| d.clone()).unwrap_or_default();
+                        std::thread::spawn(move || {
+                            let mut file = File::from(fd);
+                            let _ = file.write_all(&payload);
+                        });
+                    }
+                    $source_mod::Event::Cancelled => {
+                        source.destroy();
+                        if state.source == Some(Source::$variant(source.clone())) {
+                            state.source = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
 }
+
+data_control!(
+    Ext,
+    ExtDataControlManagerV1,
+    ExtDataControlDeviceV1,
+    ext_data_control_device_v1,
+    ExtDataControlOfferV1,
+    ext_data_control_offer_v1,
+    ExtDataControlSourceV1,
+    ext_data_control_source_v1
+);
+data_control!(
+    Wlr,
+    ZwlrDataControlManagerV1,
+    ZwlrDataControlDeviceV1,
+    zwlr_data_control_device_v1,
+    ZwlrDataControlOfferV1,
+    zwlr_data_control_offer_v1,
+    ZwlrDataControlSourceV1,
+    zwlr_data_control_source_v1
+);
 
 impl Dispatch<ExtImageCopyCaptureCursorSessionV1, WlOutput> for State {
     fn event(
@@ -879,7 +921,7 @@ impl SeatHandler for State {
 
     fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
         if self.seat.is_none() {
-            self.device = Some(self.manager.get_data_device(&seat, qh, ()));
+            self.device = Some(self.manager.get_data_device(&seat, qh));
             self.seat = Some(seat);
         }
     }

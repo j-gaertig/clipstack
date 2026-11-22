@@ -1,4 +1,4 @@
-name: Build AppImage
+name: Build
 
 on:
   push:
@@ -16,15 +16,29 @@ permissions:
   contents: read
 
 jobs:
-  appimage:
-    runs-on: ubuntu-latest
+  linux:
+    name: Linux ${{ matrix.arch }} (AppImage, deb, rpm, tar.gz)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # Built on Ubuntu 22.04 (glibc 2.35) so the packages run on older distributions too.
+    container: ubuntu:22.04
     steps:
-      - uses: actions/checkout@v7
-
       - name: Install system packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git file build-essential \
+            pkg-config libxkbcommon-dev libwayland-dev dpkg-dev rpm
+
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -32,19 +46,111 @@ jobs:
 
       - name: Set version
         if: inputs.version != ''
-        run: |
-          sed -i '0,/^version = ".*"/s//version = "${{ inputs.version }}"/' Cargo.toml
-          sed -i 's|<release version="[^"]*" date="[^"]*"/>|<release version="${{ inputs.version }}" date="'"$(date -u +%F)"'"/>|' packaging/*.metainfo.xml
-          sed -i '/^name = "cosmic-clipboard"$/{n;s/^version = ".*"/version = "${{ inputs.version }}"/}' Cargo.lock
+        run: .github/scripts/set-version.sh "${{ inputs.version }}"
 
       - name: Test
         run: cargo test --locked
 
-      - name: Build AppImage
+      - name: AppImage
         run: ./packaging/build-appimage.sh
+
+      - name: deb
+        run: ./packaging/build-deb.sh
+
+      - name: rpm
+        run: ./packaging/build-rpm.sh
+
+      - name: tar.gz
+        run: |
+          dir=Clipstack-linux-${{ matrix.arch }}
+          mkdir -p "build/$dir"
+          cp target/release/cosmic-clipboard LICENSE README.md packaging/*.desktop packaging/*.metainfo.xml "build/$dir/"
+          cp assets/icon.svg "build/$dir/com.github.jgaertig.CosmicClipboard.svg"
+          tar -C build -czf "$dir.tar.gz" "$dir"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Clipstack-x86_64.AppImage
-          path: Clipstack-x86_64.AppImage
+          name: linux-${{ matrix.arch }}
+          path: |
+            Clipstack-*.AppImage
+            Clipstack-*.deb
+            Clipstack-*.rpm
+            Clipstack-linux-*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64 (installer, portable zip)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set version
+        if: inputs.version != ''
+        run: .github/scripts/set-version.sh "${{ inputs.version }}"
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: |
+          cargo build --release --locked
+          mkdir -p dist
+          cp target/release/cosmic-clipboard.exe dist/Clipstack.exe
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/Clipstack.exe, LICENSE, README.md -DestinationPath Clipstack-windows-x64.zip
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6"
+            if (-not (Test-Path "$iscc\ISCC.exe")) { choco install innosetup --no-progress -y }
+            $env:PATH = "$iscc;$env:PATH"
+          }
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          iscc /DAppVersion=$version packaging\windows\clipstack.iss
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: |
+            Clipstack-Setup-x64.exe
+            Clipstack-windows-x64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal (dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set version
+        if: inputs.version != ''
+        run: .github/scripts/set-version.sh "${{ inputs.version }}"
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: App and dmg
+        run: ./packaging/build-macos.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: Clipstack-macos.dmg
           if-no-files-found: error

@@ -44,7 +44,12 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: Clipstack-x86_64.AppImage
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum Clipstack-* > SHA256SUMS.txt && cat SHA256SUMS.txt
 
       - name: Write release notes
         env:
@@ -55,5 +60,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ inputs.version }}" Clipstack-x86_64.AppImage \
+          gh release create "v${{ inputs.version }}" dist/* \
             --target "$GITHUB_SHA" --title "v${{ inputs.version }}" --notes-file notes.md
