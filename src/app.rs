@@ -325,7 +325,9 @@ impl Application for App {
         &mut self.core
     }
 
-    fn init(core: cosmic::Core, flags: Flags) -> (Self, Task<Action<Message>>) {
+    fn init(mut core: cosmic::Core, flags: Flags) -> (Self, Task<Action<Message>>) {
+        // COSMIC's frosted glass would blur the whole screen-sized overlay.
+        core.set_auto_blur(Default::default());
         let history = History::load();
         // Thumbnails are decoded in parallel off the UI thread.
         let images: Vec<u64> = history.entries.iter().filter(|e| e.kind == Kind::Image).map(|e| e.id).collect();

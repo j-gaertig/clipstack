@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-clipboard"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 license = "MIT"
 description = "Super+V clipboard history for Linux, Windows and macOS, with iPad drawing"
